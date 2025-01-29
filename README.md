@@ -2,8 +2,6 @@
 
 <div align="center">
 
-![Banner do Projeto](file:///C:/Users/pieva/Downloads/DALL%C2%B7E%202025-01-28%2023.25.42%20-%20A%20sleek%20and%20modern%20banner%20for%20a%20web%20application%20called%20'Consulta%20CEP',%20focused%20on%20searching%20Brazilian%20postal%20codes%20(CEP).%20The%20banner%20should%20feature%20a%20.webp)
-
 [![React](https://img.shields.io/badge/React-18.3.1-61DAFB?logo=react&logoColor=white)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5.3-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4.1-38B2AC?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
