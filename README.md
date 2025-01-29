@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Banner do Projeto](https://images.unsplash.com/photo-1579547944212-c4f4961a8dd8?auto=format&fit=crop&w=800&q=80)
+![Banner do Projeto](file:///C:/Users/pieva/Downloads/DALL%C2%B7E%202025-01-28%2023.25.42%20-%20A%20sleek%20and%20modern%20banner%20for%20a%20web%20application%20called%20'Consulta%20CEP',%20focused%20on%20searching%20Brazilian%20postal%20codes%20(CEP).%20The%20banner%20should%20feature%20a%20.webp)
 
 [![React](https://img.shields.io/badge/React-18.3.1-61DAFB?logo=react&logoColor=white)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5.3-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
