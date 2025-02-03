@@ -43,7 +43,6 @@ export async function fetchAddressData(cep: string): Promise<CombinedAddressData
   const cleanCep = cep.replace(/\D/g, '');
   
   try {
-    // Fazendo as requisições em paralelo para melhor performance
     const [viaCepResponse, awesomeApiResponse] = await Promise.allSettled([
       fetch(`https://viacep.com.br/ws/${cleanCep}/json/`),
       fetch(`https://cep.awesomeapi.com.br/json/${cleanCep}`)
@@ -53,7 +52,6 @@ export async function fetchAddressData(cep: string): Promise<CombinedAddressData
     let awesomeApiData: AwesomeAPIResponse | null = null;
     let mainSource: 'viacep' | 'awesomeapi' | null = null;
 
-    // Processando resposta do ViaCEP
     if (viaCepResponse.status === 'fulfilled' && viaCepResponse.value.ok) {
       viaCepData = await viaCepResponse.value.json();
       if (!viaCepData.erro) {
@@ -61,7 +59,6 @@ export async function fetchAddressData(cep: string): Promise<CombinedAddressData
       }
     }
 
-    // Processando resposta do AwesomeAPI
     if (awesomeApiResponse.status === 'fulfilled' && awesomeApiResponse.value.ok) {
       awesomeApiData = await awesomeApiResponse.value.json();
       if (!mainSource) {
@@ -69,12 +66,10 @@ export async function fetchAddressData(cep: string): Promise<CombinedAddressData
       }
     }
 
-    // Se nenhuma API retornou dados válidos
     if (!mainSource) {
       throw new Error('CEP não encontrado em nenhuma das bases de dados.');
     }
 
-    // Combinando os dados das duas APIs, priorizando a API principal mas complementando com dados da outra
     if (mainSource === 'viacep' && viaCepData) {
       return {
         cep: viaCepData.cep,
@@ -112,5 +107,61 @@ export async function fetchAddressData(cep: string): Promise<CombinedAddressData
       throw error;
     }
     throw new Error('Erro ao buscar o CEP. Verifique se o CEP é válido e tente novamente.');
+  }
+}
+
+export async function processBatchCeps(ceps: string[]) {
+  const results = await Promise.all(
+    ceps.map(async (cep) => {
+      try {
+        const data = await fetchAddressData(cep);
+        return {
+          cep,
+          status: 'Encontrado',
+          endereco: `${data.logradouro}, ${data.bairro}, ${data.cidade} - ${data.estado}`
+        };
+      } catch (error) {
+        return {
+          cep,
+          status: 'Não encontrado',
+          endereco: undefined
+        };
+      }
+    })
+  );
+
+  return results;
+}
+
+export async function searchAddressByCep(address: {
+  rua: string;
+  bairro: string;
+  cidade: string;
+  estado: string;
+}) {
+  const { cidade, estado } = address;
+  
+  try {
+    const response = await fetch(
+      `https://viacep.com.br/ws/${estado}/${cidade}/${address.rua}/json/`
+    );
+    
+    if (!response.ok) {
+      throw new Error('Endereço não encontrado');
+    }
+
+    const data: ViaCEPResponse[] = await response.json();
+    
+    return data.map(item => ({
+      endereco: `${item.logradouro}, ${item.bairro}, ${item.localidade} - ${item.uf}`,
+      cep: item.cep,
+      status: 'Encontrado'
+    }));
+  } catch (error) {
+    return [{
+      endereco: `${address.rua}, ${address.bairro}, ${ address.cidade} - ${address.estado}`,
+      cep: 'Não encontrado',
+      status: 'Não encontrado'
+    }];
   }
 }

@@ -2,11 +2,8 @@
 
 <div align="center">
 
-<<<<<<< HEAD
 ![Banner do Projeto](https://images.unsplash.com/photo-1579547944212-c4f4961a8dd8?auto=format&fit=crop&w=800&q=80)
 
-=======
->>>>>>> a2ed682ecdc74f6d19ada90e61478508aa5e9338
 [![React](https://img.shields.io/badge/React-18.3.1-61DAFB?logo=react&logoColor=white)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5.3-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4.1-38B2AC?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
@@ -320,8 +317,4 @@ Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para ma
 
 [⬆ Voltar ao topo](#-consulta-cep---sistema-avançado-de-busca-de-endereços)
 
-<<<<<<< HEAD
 </div>
-=======
-</div>
->>>>>>> a2ed682ecdc74f6d19ada90e61478508aa5e9338
