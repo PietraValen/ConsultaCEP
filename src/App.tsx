@@ -106,8 +106,7 @@ export default function App() {
 
       <footer className="mt-auto py-6 text-center bg-white shadow-md">
         <div className="flex items-center justify-center gap-2 text-gray-600">
-          <span>Desenvolvido com</span>
-          <Heart className="w-4 h-4 text-red-500 fill-current animate-pulse" />
+          <span>Desenvolvido</span>
           <span>por</span>
           <strong className="font-medium">Pietra Valentina</strong>
         </div>
