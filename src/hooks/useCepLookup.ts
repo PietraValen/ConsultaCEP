@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { fetchAddressData } from '../services/cep';
+import { fetchAddressDataFromAllAPIs } from '../services/cep';
 
 interface AddressData {
   cep: string;
@@ -18,7 +18,7 @@ interface AddressData {
 export function useCepLookup() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [addressData, setAddressData] = useState<AddressData | null>(null);
+  const [addressDataByApi, setAddressDataByApi] = useState<Record<string, AddressData> | null>(null);
 
   const lookupCep = async (cep: string) => {
     const cleanCep = cep.replace(/\D/g, '');
@@ -32,11 +32,11 @@ export function useCepLookup() {
     setError(null);
 
     try {
-      const data = await fetchAddressData(cep);
-      setAddressData(data);
+      const results = await fetchAddressDataFromAllAPIs(cep);
+      setAddressDataByApi(results);
     } catch (error) {
-      setError((error as Error).message);
-      setAddressData(null);
+      setError(error instanceof Error ? error.message : 'Erro na busca de endereços');
+      setAddressDataByApi(null);
     } finally {
       setLoading(false);
     }
@@ -45,7 +45,7 @@ export function useCepLookup() {
   return {
     loading,
     error,
-    addressData,
+    addressDataByApi,
     lookupCep
   };
 }

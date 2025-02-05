@@ -5,11 +5,12 @@ import { AddressCard } from './components/AddressCard';
 import { BatchLookup } from './components/BatchLookup';
 import { AddressSearch } from './components/AddressSearch';
 import { Tabs } from './components/Tabs';
+import { APIStatusCards } from './components/APIStatusCards';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'single' | 'batch' | 'address'>('single');
   const [cep, setCep] = useState('');
-  const { loading, error, addressData, lookupCep } = useCepLookup();
+  const { loading, error, addressDataByApi, lookupCep } = useCepLookup();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,6 +44,8 @@ export default function App() {
           </p>
         </div>
 
+        <APIStatusCards />
+
         <Tabs
           tabs={tabs}
           activeTab={activeTab}
@@ -51,8 +54,8 @@ export default function App() {
 
         <div className="mt-8">
           {activeTab === 'single' && (
-            <div className="max-w-md mx-auto">
-              <form onSubmit={handleSubmit} className="mb-8">
+            <div className="max-w-6xl mx-auto">
+              <form onSubmit={handleSubmit} className="mb-8 max-w-md mx-auto">
                 <div className="relative">
                   <label
                     htmlFor="cep"
@@ -95,7 +98,13 @@ export default function App() {
                 )}
               </form>
 
-              {addressData && <AddressCard data={addressData} />}
+              {addressDataByApi && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {Object.entries(addressDataByApi).map(([apiName, data]) => (
+                    <AddressCard key={apiName} data={data} apiName={apiName} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

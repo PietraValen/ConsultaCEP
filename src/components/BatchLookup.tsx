@@ -53,18 +53,22 @@ export function BatchLookup() {
       }
 
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = utils.sheet_to_json<{ cep: string }>(worksheet);
+      const jsonData = utils.sheet_to_json<{ cep: string | number }>(worksheet);
       
       if (!jsonData.length) {
         throw new Error('Nenhum dado encontrado na planilha');
       }
 
-      const ceps = jsonData
-        .map(row => String(row.cep || '').replace(/\D/g, ''))
-        .filter(cep => cep.length === 8);
+      const ceps = jsonData.map(row => {
+        // Handle both string and number formats from Excel
+        const cepValue = String(row.cep || '');
+        // Remove any non-digit characters and pad with zeros if needed
+        const cleanCep = cepValue.replace(/\D/g, '').padStart(8, '0');
+        return cleanCep;
+      }).filter(cep => cep.length === 8);
 
       if (ceps.length === 0) {
-        throw new Error('Nenhum CEP válido encontrado no arquivo. Os CEPs devem ter 8 dígitos.');
+        throw new Error('Nenhum CEP válido encontrado no arquivo. Verifique se a coluna "cep" existe e contém CEPs válidos com 8 dígitos.');
       }
 
       const results = await processBatchCeps(ceps);
