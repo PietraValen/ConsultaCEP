@@ -64,9 +64,11 @@ const cepCache = new Map<string, Record<string, CombinedAddressData>>();
 const CACHE_DURATION = 1000 * 60 * 5; // 5 minutes
 
 let apiStatus: APIStatus[] = [
-  { id: 'viacep', name: 'ViaCEP', status: 'online', lastCheck: new Date(), responseTime: 0 },
+  { id: 'brasilapi', name: 'BrasilAPI', status: 'online', lastCheck: new Date(), responseTime: 0 },
   { id: 'awesomeapi', name: 'AwesomeAPI', status: 'online', lastCheck: new Date(), responseTime: 0 },
-  { id: 'brasilapi', name: 'BrasilAPI', status: 'online', lastCheck: new Date(), responseTime: 0 }
+  { id: 'viacep', name: 'ViaCEP', status: 'online', lastCheck: new Date(), responseTime: 0 },
+  { id: 'apicep', name: 'APICEP', status: 'online', lastCheck: new Date(), responseTime: 0 },
+  { id: 'widenet', name: 'WideNet', status: 'online', lastCheck: new Date(), responseTime: 0 }
 ];
 
 async function checkAPIStatus(api: string): Promise<boolean> {
@@ -77,14 +79,28 @@ async function checkAPIStatus(api: string): Promise<boolean> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
 
-    const response = await fetch(
-      api === 'viacep' 
-        ? `https://viacep.com.br/ws/${testCEP}/json/`
-        : api === 'awesomeapi'
-        ? `https://cep.awesomeapi.com.br/json/${testCEP}`
-        : `https://brasilapi.com.br/api/cep/v1/${testCEP}`,
-      { signal: controller.signal }
-    );
+    let url = '';
+    switch (api) {
+      case 'brasilapi':
+        url = `https://brasilapi.com.br/api/cep/v1/${testCEP}`;
+        break;
+      case 'awesomeapi':
+        url = `https://cep.awesomeapi.com.br/json/${testCEP}`;
+        break;
+      case 'viacep':
+        url = `https://viacep.com.br/ws/${testCEP}/json/`;
+        break;
+      case 'apicep':
+        url = `https://ws.apicep.com/cep/${testCEP}.json`;
+        break;
+      case 'widenet':
+        url = `https://cep.widenet.host/busca-cep/api/cep.json?code=${testCEP}`;
+        break;
+      default:
+        return false;
+    }
+
+    const response = await fetch(url, { signal: controller.signal });
     
     clearTimeout(timeoutId);
     const responseTime = Date.now() - startTime;
@@ -292,30 +308,32 @@ export async function fetchAddressDataFromAllAPIs(cep: string): Promise<Record<s
 
   // Check API status every request to keep it updated
   await Promise.all([
-    checkAPIStatus('viacep'),
+    checkAPIStatus('brasilapi'),
     checkAPIStatus('awesomeapi'),
-    checkAPIStatus('brasilapi')
+    checkAPIStatus('viacep'),
+    checkAPIStatus('apicep'),
+    checkAPIStatus('widenet')
   ]);
 
   const results: Record<string, CombinedAddressData> = {};
 
   try {
-    const [viaCepResult, awesomeResult, brasilResult] = await Promise.allSettled([
-      fetchViaCEP(cleanCep),
+    const [brasilResult, awesomeResult, viaCepResult] = await Promise.allSettled([
+      fetchBrasilAPI(cleanCep),
       fetchAwesomeAPI(cleanCep),
-      fetchBrasilAPI(cleanCep)
+      fetchViaCEP(cleanCep)
     ]);
 
-    if (viaCepResult.status === 'fulfilled' && viaCepResult.value) {
-      results['ViaCEP'] = viaCepResult.value;
+    if (brasilResult.status === 'fulfilled' && brasilResult.value) {
+      results['BrasilAPI'] = brasilResult.value;
     }
     
     if (awesomeResult.status === 'fulfilled' && awesomeResult.value) {
       results['AwesomeAPI'] = awesomeResult.value;
     }
     
-    if (brasilResult.status === 'fulfilled' && brasilResult.value) {
-      results['BrasilAPI'] = brasilResult.value;
+    if (viaCepResult.status === 'fulfilled' && viaCepResult.value) {
+      results['ViaCEP'] = viaCepResult.value;
     }
 
     // Cache the results
@@ -333,9 +351,11 @@ export async function fetchAddressDataFromAllAPIs(cep: string): Promise<Record<s
 export async function processBatchCeps(ceps: string[]) {
   // Check API status before processing batch
   await Promise.all([
-    checkAPIStatus('viacep'),
+    checkAPIStatus('brasilapi'),
     checkAPIStatus('awesomeapi'),
-    checkAPIStatus('brasilapi')
+    checkAPIStatus('viacep'),
+    checkAPIStatus('apicep'),
+    checkAPIStatus('widenet')
   ]);
 
   const results = await Promise.all(

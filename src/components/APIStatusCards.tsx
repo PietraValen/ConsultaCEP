@@ -34,9 +34,12 @@ export function APIStatusCards() {
     return `${Math.floor(seconds / 3600)}h atrás`;
   };
 
+  // Mostrar apenas as 3 principais APIs para manter o layout original
+  const mainApis = apiStatus.slice(0, 3);
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-      {apiStatus.map((api) => (
+      {mainApis.map((api) => (
         <div
           key={api.id}
           className={`bg-white rounded-lg shadow-lg p-6 border-l-4 ${
