@@ -10,6 +10,7 @@ export interface BatchResult {
   fonte: string;
   tempo_resposta: number;
   erro?: string;
+  campo_origem?: string;
 }
 
 // Função para processar CEPs em lote com controle avançado

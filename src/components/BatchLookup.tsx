@@ -13,6 +13,7 @@ interface BatchResult {
   fonte: string;
   tempo_resposta: number;
   erro?: string;
+  campo_origem: string; // Novo campo para identificar de qual campo veio
 }
 
 interface BatchProgress {
@@ -24,28 +25,29 @@ interface BatchProgress {
   startTime: number;
   successCount: number;
   errorCount: number;
+  campo1Count: number;
+  campo2Count: number;
+  campo3Count: number;
+  campo4Count: number;
 }
 
-const MAX_CEPS = 600;
+const MAX_CEPS_PER_FIELD = 600;
 const BATCH_SIZE = 10; // Processar em lotes de 10 para melhor performance
 
 export function BatchLookup() {
   const [loading, setLoading] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [textInput, setTextInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<BatchResult[]>([]);
   const [progress, setProgress] = useState<BatchProgress | null>(null);
-  const [showAdvancedInput, setShowAdvancedInput] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Estados para entrada avançada
-  const [advancedInput, setAdvancedInput] = useState({
-    ceps: '',
-    ruas: '',
-    bairros: '',
-    cidades: '',
-    estados: ''
+  // 4 campos separados para CEPs
+  const [cepFields, setCepFields] = useState({
+    campo1: '',
+    campo2: '',
+    campo3: '',
+    campo4: ''
   });
 
   const resetState = () => {
@@ -62,63 +64,40 @@ export function BatchLookup() {
   const parseInput = (input: string): string[] => {
     return input
       .split(/[\n,\s]+/)
-      .map(item => item.trim())
-      .filter(item => item.length > 0);
+      .map(item => item.trim().replace(/\D/g, '')) // Remove tudo que não é dígito
+      .filter(item => item.length === 8); // Só aceita CEPs com 8 dígitos
   };
 
-  const validateAndPrepareCeps = (): string[] => {
-    let ceps: string[] = [];
+  const validateAndPrepareCeps = (): { ceps: string[], fieldCounts: Record<string, number> } => {
+    const allCeps: string[] = [];
+    const fieldCounts: Record<string, number> = {};
 
-    if (showAdvancedInput) {
-      // Processar entrada avançada
-      const cepList = parseInput(advancedInput.ceps);
-      const ruaList = parseInput(advancedInput.ruas);
-      const bairroList = parseInput(advancedInput.bairros);
-      const cidadeList = parseInput(advancedInput.cidades);
-      const estadoList = parseInput(advancedInput.estados);
-
-      // Pegar o maior array para determinar quantos registros processar
-      const maxLength = Math.max(
-        cepList.length,
-        ruaList.length,
-        bairroList.length,
-        cidadeList.length,
-        estadoList.length
-      );
-
-      if (maxLength === 0) {
-        throw new Error('Pelo menos um campo deve ser preenchido');
+    // Processar cada campo
+    Object.entries(cepFields).forEach(([fieldName, fieldValue]) => {
+      const ceps = parseInput(fieldValue);
+      
+      if (ceps.length > MAX_CEPS_PER_FIELD) {
+        throw new Error(`Campo ${fieldName.replace('campo', '')} excede o limite de ${MAX_CEPS_PER_FIELD} CEPs. Encontrados: ${ceps.length}`);
       }
 
-      // Criar lista de CEPs (se fornecidos) ou usar índices para busca por endereço
-      for (let i = 0; i < maxLength; i++) {
-        const cep = cepList[i];
-        if (cep) {
-          const cleanCep = cep.replace(/\D/g, '');
-          if (cleanCep.length === 8) {
-            ceps.push(cleanCep);
-          }
-        } else {
-          // Se não há CEP, criar um identificador para busca por endereço
-          ceps.push(`ENDERECO_${i}`);
-        }
-      }
-    } else {
-      // Processar entrada simples
-      ceps = parseInput(textInput)
-        .map(cep => cep.replace(/\D/g, ''))
-        .filter(cep => cep.length === 8);
-    }
+      fieldCounts[fieldName] = ceps.length;
+      
+      // Adicionar identificador do campo ao CEP para rastreamento
+      ceps.forEach(cep => {
+        allCeps.push(`${cep}|${fieldName}`);
+      });
+    });
 
-    if (ceps.length === 0) {
+    if (allCeps.length === 0) {
       throw new Error('Nenhum CEP válido encontrado. Os CEPs devem ter 8 dígitos.');
     }
 
-    if (ceps.length > MAX_CEPS) {
-      throw new Error(`Máximo de ${MAX_CEPS} CEPs permitidos. Você inseriu ${ceps.length}.`);
+    const totalCeps = allCeps.length;
+    if (totalCeps > MAX_CEPS_PER_FIELD * 4) {
+      throw new Error(`Máximo total de ${MAX_CEPS_PER_FIELD * 4} CEPs permitidos. Você inseriu ${totalCeps}.`);
     }
 
-    return ceps;
+    return { ceps: allCeps, fieldCounts };
   };
 
   const processManualInput = async () => {
@@ -126,14 +105,14 @@ export function BatchLookup() {
     
     try {
       resetState();
-      const ceps = validateAndPrepareCeps();
-      await processBatch(ceps);
+      const { ceps, fieldCounts } = validateAndPrepareCeps();
+      await processBatch(ceps, fieldCounts);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Erro ao processar CEPs');
     }
   };
 
-  const processBatch = async (ceps: string[]) => {
+  const processBatch = async (cepsWithFields: string[], fieldCounts: Record<string, number>) => {
     setLoading(true);
     setError(null);
     
@@ -142,13 +121,17 @@ export function BatchLookup() {
     
     const initialProgress: BatchProgress = {
       current: 0,
-      total: ceps.length,
+      total: cepsWithFields.length,
       percentage: 0,
       estimatedTimeRemaining: 0,
       averageTimePerCep: 0,
       startTime,
       successCount: 0,
-      errorCount: 0
+      errorCount: 0,
+      campo1Count: fieldCounts.campo1 || 0,
+      campo2Count: fieldCounts.campo2 || 0,
+      campo3Count: fieldCounts.campo3 || 0,
+      campo4Count: fieldCounts.campo4 || 0
     };
     
     setProgress(initialProgress);
@@ -157,7 +140,7 @@ export function BatchLookup() {
       const allResults: BatchResult[] = [];
       
       // Processar em lotes menores para melhor performance
-      for (let i = 0; i < ceps.length; i += BATCH_SIZE) {
+      for (let i = 0; i < cepsWithFields.length; i += BATCH_SIZE) {
         if (abortControllerRef.current?.signal.aborted) {
           break;
         }
@@ -167,19 +150,32 @@ export function BatchLookup() {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
 
-        const batch = ceps.slice(i, Math.min(i + BATCH_SIZE, ceps.length));
+        const batch = cepsWithFields.slice(i, Math.min(i + BATCH_SIZE, cepsWithFields.length));
+        
+        // Separar CEP do campo de origem
+        const cleanBatch = batch.map(item => {
+          const [cep, campo] = item.split('|');
+          return { cep, campo };
+        });
+
         const batchResults = await processBatchCepsAdvanced(
-          batch, 
+          cleanBatch.map(item => item.cep), 
           abortControllerRef.current.signal
         );
         
-        allResults.push(...batchResults);
+        // Adicionar informação do campo de origem aos resultados
+        const resultsWithField = batchResults.map((result, index) => ({
+          ...result,
+          campo_origem: cleanBatch[index].campo.replace('campo', 'Campo ')
+        }));
+        
+        allResults.push(...resultsWithField);
         
         // Atualizar progresso
-        const current = Math.min(i + BATCH_SIZE, ceps.length);
+        const current = Math.min(i + BATCH_SIZE, cepsWithFields.length);
         const elapsed = Date.now() - startTime;
         const averageTimePerCep = elapsed / current;
-        const remaining = ceps.length - current;
+        const remaining = cepsWithFields.length - current;
         const estimatedTimeRemaining = remaining * averageTimePerCep;
         
         const successCount = allResults.filter(r => r.status === 'Encontrado').length;
@@ -187,13 +183,17 @@ export function BatchLookup() {
         
         setProgress({
           current,
-          total: ceps.length,
-          percentage: (current / ceps.length) * 100,
+          total: cepsWithFields.length,
+          percentage: (current / cepsWithFields.length) * 100,
           estimatedTimeRemaining,
           averageTimePerCep,
           startTime,
           successCount,
-          errorCount
+          errorCount,
+          campo1Count: fieldCounts.campo1 || 0,
+          campo2Count: fieldCounts.campo2 || 0,
+          campo3Count: fieldCounts.campo3 || 0,
+          campo4Count: fieldCounts.campo4 || 0
         });
         
         setResults([...allResults]);
@@ -229,32 +229,57 @@ export function BatchLookup() {
 
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
       const jsonData = utils.sheet_to_json<{
-        cep?: string | number;
-        rua?: string;
-        bairro?: string;
-        cidade?: string;
-        estado?: string;
+        campo1?: string | number;
+        campo2?: string | number;
+        campo3?: string | number;
+        campo4?: string | number;
       }>(worksheet);
       
       if (!jsonData.length) {
         throw new Error('Nenhum dado encontrado na planilha');
       }
 
-      if (jsonData.length > MAX_CEPS) {
-        throw new Error(`Máximo de ${MAX_CEPS} registros permitidos. Arquivo contém ${jsonData.length}.`);
-      }
+      // Processar dados do arquivo e distribuir nos campos
+      const newCepFields = {
+        campo1: '',
+        campo2: '',
+        campo3: '',
+        campo4: ''
+      };
 
-      const ceps = jsonData.map((row, index) => {
-        const cepValue = String(row.cep || '');
-        const cleanCep = cepValue.replace(/\D/g, '').padStart(8, '0');
-        return cleanCep.length === 8 ? cleanCep : `ENDERECO_${index}`;
-      }).filter(cep => cep.length >= 8);
+      jsonData.forEach((row, index) => {
+        if (row.campo1) {
+          const cep = String(row.campo1).replace(/\D/g, '');
+          if (cep.length === 8) {
+            newCepFields.campo1 += (newCepFields.campo1 ? '\n' : '') + cep;
+          }
+        }
+        if (row.campo2) {
+          const cep = String(row.campo2).replace(/\D/g, '');
+          if (cep.length === 8) {
+            newCepFields.campo2 += (newCepFields.campo2 ? '\n' : '') + cep;
+          }
+        }
+        if (row.campo3) {
+          const cep = String(row.campo3).replace(/\D/g, '');
+          if (cep.length === 8) {
+            newCepFields.campo3 += (newCepFields.campo3 ? '\n' : '') + cep;
+          }
+        }
+        if (row.campo4) {
+          const cep = String(row.campo4).replace(/\D/g, '');
+          if (cep.length === 8) {
+            newCepFields.campo4 += (newCepFields.campo4 ? '\n' : '') + cep;
+          }
+        }
+      });
 
-      if (ceps.length === 0) {
-        throw new Error('Nenhum CEP válido encontrado no arquivo.');
-      }
-
-      await processBatch(ceps);
+      setCepFields(newCepFields);
+      
+      // Processar automaticamente após carregar o arquivo
+      const { ceps, fieldCounts } = validateAndPrepareCeps();
+      await processBatch(ceps, fieldCounts);
+      
       e.target.value = '';
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Erro ao processar arquivo');
@@ -266,6 +291,7 @@ export function BatchLookup() {
     
     try {
       const exportData = results.map(result => ({
+        'Campo Origem': result.campo_origem,
         CEP: result.cep,
         Rua: result.rua,
         Bairro: result.bairro,
@@ -281,20 +307,42 @@ export function BatchLookup() {
       const workbook = utils.book_new();
       utils.book_append_sheet(workbook, worksheet, 'Resultados');
       
-      // Adicionar estatísticas
-      const stats = {
-        'Total Processados': results.length,
+      // Adicionar estatísticas por campo
+      const statsByCampo = ['Campo 1', 'Campo 2', 'Campo 3', 'Campo 4'].map(campo => {
+        const campoResults = results.filter(r => r.campo_origem === campo);
+        return {
+          Campo: campo,
+          'Total Processados': campoResults.length,
+          'Encontrados': campoResults.filter(r => r.status === 'Encontrado').length,
+          'Não Encontrados': campoResults.filter(r => r.status === 'Não encontrado').length,
+          'Erros': campoResults.filter(r => r.status === 'Erro').length,
+          'Taxa Sucesso (%)': campoResults.length > 0 
+            ? Math.round((campoResults.filter(r => r.status === 'Encontrado').length / campoResults.length) * 100)
+            : 0,
+          'Tempo Médio (ms)': campoResults.length > 0
+            ? Math.round(campoResults.reduce((acc, r) => acc + r.tempo_resposta, 0) / campoResults.length)
+            : 0
+        };
+      });
+      
+      const statsWorksheet = utils.json_to_sheet(statsByCampo);
+      utils.book_append_sheet(workbook, statsWorksheet, 'Estatísticas por Campo');
+      
+      // Estatísticas gerais
+      const generalStats = {
+        'Total Geral': results.length,
         'Encontrados': results.filter(r => r.status === 'Encontrado').length,
         'Não Encontrados': results.filter(r => r.status === 'Não encontrado').length,
         'Erros': results.filter(r => r.status === 'Erro').length,
-        'Tempo Médio (ms)': Math.round(results.reduce((acc, r) => acc + r.tempo_resposta, 0) / results.length),
+        'Taxa Sucesso Geral (%)': Math.round((results.filter(r => r.status === 'Encontrado').length / results.length) * 100),
+        'Tempo Médio Geral (ms)': Math.round(results.reduce((acc, r) => acc + r.tempo_resposta, 0) / results.length),
         'Data Processamento': new Date().toLocaleString('pt-BR')
       };
       
-      const statsWorksheet = utils.json_to_sheet([stats]);
-      utils.book_append_sheet(workbook, statsWorksheet, 'Estatísticas');
+      const generalStatsWorksheet = utils.json_to_sheet([generalStats]);
+      utils.book_append_sheet(workbook, generalStatsWorksheet, 'Estatísticas Gerais');
       
-      writeFile(workbook, `consulta_cep_lote_${new Date().toISOString().split('T')[0]}.xlsx`);
+      writeFile(workbook, `consulta_cep_4campos_${new Date().toISOString().split('T')[0]}.xlsx`);
     } catch (error) {
       setError('Erro ao gerar arquivo de resultados');
     }
@@ -318,17 +366,41 @@ export function BatchLookup() {
     setLoading(false);
   };
 
+  const handleFieldChange = (field: keyof typeof cepFields, value: string) => {
+    setError(null);
+    setCepFields(prev => ({ ...prev, [field]: value }));
+  };
+
+  const clearField = (field: keyof typeof cepFields) => {
+    setCepFields(prev => ({ ...prev, [field]: '' }));
+  };
+
+  const getFieldStats = (field: keyof typeof cepFields) => {
+    const ceps = parseInput(cepFields[field]);
+    return {
+      count: ceps.length,
+      isOverLimit: ceps.length > MAX_CEPS_PER_FIELD,
+      percentage: (ceps.length / MAX_CEPS_PER_FIELD) * 100
+    };
+  };
+
+  const totalCeps = Object.values(cepFields).reduce((total, field) => {
+    return total + parseInput(field).length;
+  }, 0);
+
+  const hasAnyCeps = Object.values(cepFields).some(field => field.trim());
+
   return (
     <div className="max-w-6xl mx-auto">
       <div className="bg-white rounded-lg shadow-lg p-6">
         <div className="space-y-6">
           {/* Header com informações */}
           <div className="border-b pb-4">
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Consulta em Lote</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Consulta em Lote - 4 Campos CEP</h2>
             <div className="flex flex-wrap gap-4 text-sm text-gray-600">
               <div className="flex items-center gap-1">
                 <BarChart3 className="w-4 h-4" />
-                <span>Máximo: {MAX_CEPS} CEPs</span>
+                <span>Máximo: {MAX_CEPS_PER_FIELD} CEPs por campo</span>
               </div>
               <div className="flex items-center gap-1">
                 <Clock className="w-4 h-4" />
@@ -336,119 +408,97 @@ export function BatchLookup() {
               </div>
               <div className="flex items-center gap-1">
                 <FileText className="w-4 h-4" />
-                <span>Suporte: Excel, CSV</span>
+                <span>Total atual: {totalCeps} CEPs</span>
               </div>
             </div>
           </div>
 
-          {/* Toggle para entrada avançada */}
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-medium text-gray-900">
-              {showAdvancedInput ? 'Entrada Avançada (4 Campos)' : 'Entrada Simples'}
-            </h3>
-            <button
-              onClick={() => setShowAdvancedInput(!showAdvancedInput)}
-              className="px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
-            >
-              {showAdvancedInput ? 'Modo Simples' : 'Modo Avançado'}
-            </button>
+          {/* 4 Campos de CEP */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {Object.entries(cepFields).map(([fieldKey, fieldValue], index) => {
+              const stats = getFieldStats(fieldKey as keyof typeof cepFields);
+              const fieldNumber = index + 1;
+              
+              return (
+                <div key={fieldKey} className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Campo {fieldNumber} - CEPs
+                    </label>
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className={`px-2 py-1 rounded-full ${
+                        stats.isOverLimit 
+                          ? 'bg-red-100 text-red-800' 
+                          : stats.count > 0 
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {stats.count}/{MAX_CEPS_PER_FIELD}
+                      </span>
+                      {fieldValue && (
+                        <button
+                          onClick={() => clearField(fieldKey as keyof typeof cepFields)}
+                          className="text-gray-400 hover:text-gray-600"
+                          title="Limpar campo"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="relative">
+                    <textarea
+                      value={fieldValue}
+                      onChange={(e) => handleFieldChange(fieldKey as keyof typeof cepFields, e.target.value)}
+                      placeholder={`Digite os CEPs do campo ${fieldNumber}
+Exemplo:
+12345678
+87654321
+11111111`}
+                      className={`w-full h-32 px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none ${
+                        stats.isOverLimit 
+                          ? 'border-red-300 bg-red-50' 
+                          : 'border-gray-300'
+                      }`}
+                      disabled={loading}
+                    />
+                    
+                    {/* Barra de progresso do campo */}
+                    {stats.count > 0 && (
+                      <div className="absolute bottom-2 right-2 w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${
+                            stats.isOverLimit 
+                              ? 'bg-red-500' 
+                              : 'bg-blue-500'
+                          }`}
+                          style={{ width: `${Math.min(stats.percentage, 100)}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  
+                  {stats.isOverLimit && (
+                    <p className="text-xs text-red-600">
+                      ⚠️ Limite excedido! Máximo {MAX_CEPS_PER_FIELD} CEPs por campo.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
-
-          {/* Entrada de dados */}
-          {showAdvancedInput ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  CEPs
-                </label>
-                <textarea
-                  value={advancedInput.ceps}
-                  onChange={(e) => setAdvancedInput(prev => ({ ...prev, ceps: e.target.value }))}
-                  placeholder="12345-678&#10;87654-321"
-                  className="w-full h-32 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={loading}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Ruas
-                </label>
-                <textarea
-                  value={advancedInput.ruas}
-                  onChange={(e) => setAdvancedInput(prev => ({ ...prev, ruas: e.target.value }))}
-                  placeholder="Rua das Flores&#10;Av. Paulista"
-                  className="w-full h-32 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={loading}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Bairros
-                </label>
-                <textarea
-                  value={advancedInput.bairros}
-                  onChange={(e) => setAdvancedInput(prev => ({ ...prev, bairros: e.target.value }))}
-                  placeholder="Centro&#10;Vila Madalena"
-                  className="w-full h-32 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={loading}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Cidades
-                </label>
-                <textarea
-                  value={advancedInput.cidades}
-                  onChange={(e) => setAdvancedInput(prev => ({ ...prev, cidades: e.target.value }))}
-                  placeholder="São Paulo&#10;Rio de Janeiro"
-                  className="w-full h-32 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={loading}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Estados
-                </label>
-                <textarea
-                  value={advancedInput.estados}
-                  onChange={(e) => setAdvancedInput(prev => ({ ...prev, estados: e.target.value }))}
-                  placeholder="SP&#10;RJ"
-                  className="w-full h-32 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={loading}
-                />
-              </div>
-            </div>
-          ) : (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                CEPs para Consulta
-              </label>
-              <textarea
-                value={textInput}
-                onChange={(e) => {
-                  setError(null);
-                  setTextInput(e.target.value);
-                }}
-                placeholder="Digite os CEPs separados por vírgula, espaço ou nova linha&#10;Exemplo: 12345-678, 87654-321&#10;&#10;Máximo: 600 CEPs"
-                className="w-full h-32 px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                disabled={loading}
-              />
-              <div className="mt-2 text-sm text-gray-500">
-                {textInput ? `${parseInput(textInput).length} CEPs inseridos` : 'Nenhum CEP inserido'}
-              </div>
-            </div>
-          )}
 
           {/* Upload de arquivo */}
           <div className="border-t border-gray-200 pt-6">
             <h3 className="text-lg font-medium text-gray-900 mb-4">
-              Upload de Arquivo
+              Upload de Arquivo Excel/CSV
             </h3>
             <div className="space-y-2">
+              <p className="text-sm text-gray-500">
+                Arquivo deve ter colunas: campo1, campo2, campo3, campo4 (cada uma com até {MAX_CEPS_PER_FIELD} CEPs)
+              </p>
               <label className="block">
-                <span className="text-sm text-gray-500 mb-2 block">
-                  Aceita arquivos Excel (.xlsx, .csv) com colunas: cep, rua, bairro, cidade, estado (máximo {MAX_CEPS} linhas)
-                </span>
                 <input
                   type="file"
                   accept=".xlsx,.csv"
@@ -505,6 +555,27 @@ export function BatchLookup() {
                 </div>
               </div>
 
+              {/* Estatísticas por campo */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div className="bg-white rounded-lg p-3">
+                  <div className="text-gray-500">Campo 1</div>
+                  <div className="text-lg font-semibold text-blue-600">{progress.campo1Count} CEPs</div>
+                </div>
+                <div className="bg-white rounded-lg p-3">
+                  <div className="text-gray-500">Campo 2</div>
+                  <div className="text-lg font-semibold text-green-600">{progress.campo2Count} CEPs</div>
+                </div>
+                <div className="bg-white rounded-lg p-3">
+                  <div className="text-gray-500">Campo 3</div>
+                  <div className="text-lg font-semibold text-purple-600">{progress.campo3Count} CEPs</div>
+                </div>
+                <div className="bg-white rounded-lg p-3">
+                  <div className="text-gray-500">Campo 4</div>
+                  <div className="text-lg font-semibold text-orange-600">{progress.campo4Count} CEPs</div>
+                </div>
+              </div>
+
+              {/* Estatísticas gerais */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                 <div className="bg-white rounded-lg p-3">
                   <div className="text-gray-500">Encontrados</div>
@@ -543,18 +614,18 @@ export function BatchLookup() {
           <div className="flex flex-wrap gap-4 justify-between">
             <button
               onClick={processManualInput}
-              disabled={loading || (!textInput.trim() && !Object.values(advancedInput).some(v => v.trim()))}
+              disabled={loading || !hasAnyCeps || totalCeps === 0}
               className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  <span>Processando...</span>
+                  <span>Processando {totalCeps} CEPs...</span>
                 </>
               ) : (
                 <>
                   <Upload className="w-5 h-5 mr-2" />
-                  <span>Processar CEPs</span>
+                  <span>Processar {totalCeps} CEPs</span>
                 </>
               )}
             </button>
@@ -612,6 +683,9 @@ export function BatchLookup() {
                   <thead className="bg-gray-50 sticky top-0">
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Campo
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         CEP
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -631,6 +705,16 @@ export function BatchLookup() {
                   <tbody className="bg-white divide-y divide-gray-200">
                     {results.map((result, index) => (
                       <tr key={index} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
+                          <span className={`px-2 py-1 rounded-full text-xs ${
+                            result.campo_origem === 'Campo 1' ? 'bg-blue-100 text-blue-800' :
+                            result.campo_origem === 'Campo 2' ? 'bg-green-100 text-green-800' :
+                            result.campo_origem === 'Campo 3' ? 'bg-purple-100 text-purple-800' :
+                            'bg-orange-100 text-orange-800'
+                          }`}>
+                            {result.campo_origem}
+                          </span>
+                        </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
                           {result.cep}
                         </td>
