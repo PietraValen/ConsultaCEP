@@ -1,3 +1,5 @@
+import { buscarCepComFallback } from './cepApis';
+
 interface ViaCEPResponse {
   cep: string;
   logradouro: string;
@@ -135,18 +137,6 @@ export function getAPIStatus(): APIStatus[] {
 }
 
 async function fetchViaCEP(cep: string): Promise<CombinedAddressData | null> {
-  if (apiStatus.find(api => api.id === 'viacep')?.status === 'offline') {
-    return {
-      cep,
-      logradouro: '',
-      bairro: '',
-      cidade: '',
-      estado: '',
-      fonte: 'ViaCEP',
-      erro: 'Serviço temporariamente indisponível'
-    };
-  }
-
   try {
     const response = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
     const data: ViaCEPResponse = await response.json();
@@ -188,18 +178,6 @@ async function fetchViaCEP(cep: string): Promise<CombinedAddressData | null> {
 }
 
 async function fetchAwesomeAPI(cep: string): Promise<CombinedAddressData | null> {
-  if (apiStatus.find(api => api.id === 'awesomeapi')?.status === 'offline') {
-    return {
-      cep,
-      logradouro: '',
-      bairro: '',
-      cidade: '',
-      estado: '',
-      fonte: 'AwesomeAPI',
-      erro: 'Serviço temporariamente indisponível'
-    };
-  }
-
   try {
     const response = await fetch(`https://cep.awesomeapi.com.br/json/${cep}`);
     if (!response.ok) {
@@ -243,18 +221,6 @@ async function fetchAwesomeAPI(cep: string): Promise<CombinedAddressData | null>
 }
 
 async function fetchBrasilAPI(cep: string): Promise<CombinedAddressData | null> {
-  if (apiStatus.find(api => api.id === 'brasilapi')?.status === 'offline') {
-    return {
-      cep,
-      logradouro: '',
-      bairro: '',
-      cidade: '',
-      estado: '',
-      fonte: 'BrasilAPI',
-      erro: 'Serviço temporariamente indisponível'
-    };
-  }
-
   try {
     const response = await fetch(`https://brasilapi.com.br/api/cep/v1/${cep}`);
     if (!response.ok) {
@@ -318,6 +284,7 @@ export async function fetchAddressDataFromAllAPIs(cep: string): Promise<Record<s
   const results: Record<string, CombinedAddressData> = {};
 
   try {
+    // Tentar buscar nas 3 APIs principais primeiro
     const [brasilResult, awesomeResult, viaCepResult] = await Promise.allSettled([
       fetchBrasilAPI(cleanCep),
       fetchAwesomeAPI(cleanCep),
@@ -334,6 +301,36 @@ export async function fetchAddressDataFromAllAPIs(cep: string): Promise<Record<s
     
     if (viaCepResult.status === 'fulfilled' && viaCepResult.value) {
       results['ViaCEP'] = viaCepResult.value;
+    }
+
+    // Se nenhuma das 3 principais funcionou, usar o sistema de fallback
+    const hasValidResult = Object.values(results).some(result => !result.erro);
+    
+    if (!hasValidResult) {
+      try {
+        const fallbackResult = await buscarCepComFallback(cleanCep);
+        
+        // Adicionar resultado do fallback como uma das APIs principais
+        results['Sistema Unificado'] = {
+          cep: fallbackResult.cep,
+          logradouro: fallbackResult.rua,
+          bairro: fallbackResult.bairro,
+          cidade: fallbackResult.cidade,
+          estado: fallbackResult.estado,
+          fonte: `${fallbackResult.origem} (Fallback)`
+        };
+      } catch (fallbackError) {
+        // Se até o fallback falhar, mostrar erro
+        results['Sistema'] = {
+          cep: cleanCep,
+          logradouro: '',
+          bairro: '',
+          cidade: '',
+          estado: '',
+          fonte: 'Sistema',
+          erro: fallbackError instanceof Error ? fallbackError.message : 'Todas as fontes falharam'
+        };
+      }
     }
 
     // Cache the results
