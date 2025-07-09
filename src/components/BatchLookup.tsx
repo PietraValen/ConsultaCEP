@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Upload, Download, Loader2, AlertCircle, Play, Pause, X, FileText, Clock, BarChart3 } from 'lucide-react';
+import { Upload, Download, Loader2, AlertCircle, Play, Pause, X, FileText, Clock, BarChart3, ToggleLeft, ToggleRight } from 'lucide-react';
 import { read, utils, writeFile } from 'xlsx';
 import { processBatchCepsAdvanced } from '../services/batchCep';
 
@@ -13,7 +13,7 @@ interface BatchResult {
   fonte: string;
   tempo_resposta: number;
   erro?: string;
-  campo_origem: string; // Novo campo para identificar de qual campo veio
+  campo_origem: string;
 }
 
 interface BatchProgress {
@@ -32,9 +32,11 @@ interface BatchProgress {
 }
 
 const MAX_CEPS_PER_FIELD = 600;
-const BATCH_SIZE = 10; // Processar em lotes de 10 para melhor performance
+const MAX_CEPS_SIMPLE_MODE = 2400; // 4 * 600
+const BATCH_SIZE = 10;
 
 export function BatchLookup() {
+  const [mode, setMode] = useState<'simple' | 'advanced'>('simple');
   const [loading, setLoading] = useState(false);
   const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +44,10 @@ export function BatchLookup() {
   const [progress, setProgress] = useState<BatchProgress | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // 4 campos separados para CEPs
+  // Modo Simples - Campo único
+  const [simpleCeps, setSimpleCeps] = useState('');
+
+  // Modo Avançado - 4 campos separados
   const [cepFields, setCepFields] = useState({
     campo1: '',
     campo2: '',
@@ -64,15 +69,34 @@ export function BatchLookup() {
   const parseInput = (input: string): string[] => {
     return input
       .split(/[\n,\s]+/)
-      .map(item => item.trim().replace(/\D/g, '')) // Remove tudo que não é dígito
-      .filter(item => item.length === 8); // Só aceita CEPs com 8 dígitos
+      .map(item => item.trim().replace(/\D/g, ''))
+      .filter(item => item.length === 8);
   };
 
-  const validateAndPrepareCeps = (): { ceps: string[], fieldCounts: Record<string, number> } => {
+  const validateAndPrepareCepsSimple = (): { ceps: string[], fieldCounts: Record<string, number> } => {
+    const ceps = parseInput(simpleCeps);
+    
+    if (ceps.length > MAX_CEPS_SIMPLE_MODE) {
+      throw new Error(`Modo simples permite máximo de ${MAX_CEPS_SIMPLE_MODE} CEPs. Encontrados: ${ceps.length}`);
+    }
+
+    if (ceps.length === 0) {
+      throw new Error('Nenhum CEP válido encontrado. Os CEPs devem ter 8 dígitos.');
+    }
+
+    // No modo simples, todos os CEPs vão para o "campo1"
+    const cepsWithField = ceps.map(cep => `${cep}|campo1`);
+    
+    return { 
+      ceps: cepsWithField, 
+      fieldCounts: { campo1: ceps.length, campo2: 0, campo3: 0, campo4: 0 }
+    };
+  };
+
+  const validateAndPrepareCepsAdvanced = (): { ceps: string[], fieldCounts: Record<string, number> } => {
     const allCeps: string[] = [];
     const fieldCounts: Record<string, number> = {};
 
-    // Processar cada campo
     Object.entries(cepFields).forEach(([fieldName, fieldValue]) => {
       const ceps = parseInput(fieldValue);
       
@@ -82,7 +106,6 @@ export function BatchLookup() {
 
       fieldCounts[fieldName] = ceps.length;
       
-      // Adicionar identificador do campo ao CEP para rastreamento
       ceps.forEach(cep => {
         allCeps.push(`${cep}|${fieldName}`);
       });
@@ -105,7 +128,11 @@ export function BatchLookup() {
     
     try {
       resetState();
-      const { ceps, fieldCounts } = validateAndPrepareCeps();
+      
+      const { ceps, fieldCounts } = mode === 'simple' 
+        ? validateAndPrepareCepsSimple()
+        : validateAndPrepareCepsAdvanced();
+        
       await processBatch(ceps, fieldCounts);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Erro ao processar CEPs');
@@ -139,20 +166,17 @@ export function BatchLookup() {
     try {
       const allResults: BatchResult[] = [];
       
-      // Processar em lotes menores para melhor performance
       for (let i = 0; i < cepsWithFields.length; i += BATCH_SIZE) {
         if (abortControllerRef.current?.signal.aborted) {
           break;
         }
 
-        // Aguardar se pausado
         while (paused && !abortControllerRef.current?.signal.aborted) {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
 
         const batch = cepsWithFields.slice(i, Math.min(i + BATCH_SIZE, cepsWithFields.length));
         
-        // Separar CEP do campo de origem
         const cleanBatch = batch.map(item => {
           const [cep, campo] = item.split('|');
           return { cep, campo };
@@ -163,15 +187,15 @@ export function BatchLookup() {
           abortControllerRef.current.signal
         );
         
-        // Adicionar informação do campo de origem aos resultados
         const resultsWithField = batchResults.map((result, index) => ({
           ...result,
-          campo_origem: cleanBatch[index].campo.replace('campo', 'Campo ')
+          campo_origem: mode === 'simple' 
+            ? 'Modo Simples' 
+            : cleanBatch[index].campo.replace('campo', 'Campo ')
         }));
         
         allResults.push(...resultsWithField);
         
-        // Atualizar progresso
         const current = Math.min(i + BATCH_SIZE, cepsWithFields.length);
         const elapsed = Date.now() - startTime;
         const averageTimePerCep = elapsed / current;
@@ -198,7 +222,6 @@ export function BatchLookup() {
         
         setResults([...allResults]);
         
-        // Pequena pausa entre lotes para não sobrecarregar as APIs
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       
@@ -228,63 +251,92 @@ export function BatchLookup() {
       }
 
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = utils.sheet_to_json<{
-        campo1?: string | number;
-        campo2?: string | number;
-        campo3?: string | number;
-        campo4?: string | number;
-      }>(worksheet);
       
-      if (!jsonData.length) {
-        throw new Error('Nenhum dado encontrado na planilha');
+      if (mode === 'simple') {
+        // Modo simples: procurar por coluna "cep" ou primeira coluna
+        const jsonData = utils.sheet_to_json<{ cep?: string | number }>(worksheet);
+        
+        if (!jsonData.length) {
+          throw new Error('Nenhum dado encontrado na planilha');
+        }
+
+        const ceps = jsonData
+          .map(row => {
+            const cepValue = row.cep || Object.values(row)[0];
+            return String(cepValue || '').replace(/\D/g, '');
+          })
+          .filter(cep => cep.length === 8);
+
+        if (ceps.length === 0) {
+          throw new Error('Nenhum CEP válido encontrado no arquivo');
+        }
+
+        setSimpleCeps(ceps.join('\n'));
+        
+        // Processar automaticamente
+        const cepsWithField = ceps.map(cep => `${cep}|campo1`);
+        const fieldCounts = { campo1: ceps.length, campo2: 0, campo3: 0, campo4: 0 };
+        await processBatch(cepsWithField, fieldCounts);
+        
+      } else {
+        // Modo avançado: procurar por colunas campo1, campo2, campo3, campo4
+        const jsonData = utils.sheet_to_json<{
+          campo1?: string | number;
+          campo2?: string | number;
+          campo3?: string | number;
+          campo4?: string | number;
+        }>(worksheet);
+        
+        if (!jsonData.length) {
+          throw new Error('Nenhum dado encontrado na planilha');
+        }
+
+        const newCepFields = {
+          campo1: '',
+          campo2: '',
+          campo3: '',
+          campo4: ''
+        };
+
+        jsonData.forEach((row) => {
+          if (row.campo1) {
+            const cep = String(row.campo1).replace(/\D/g, '');
+            if (cep.length === 8) {
+              newCepFields.campo1 += (newCepFields.campo1 ? '\n' : '') + cep;
+            }
+          }
+          if (row.campo2) {
+            const cep = String(row.campo2).replace(/\D/g, '');
+            if (cep.length === 8) {
+              newCepFields.campo2 += (newCepFields.campo2 ? '\n' : '') + cep;
+            }
+          }
+          if (row.campo3) {
+            const cep = String(row.campo3).replace(/\D/g, '');
+            if (cep.length === 8) {
+              newCepFields.campo3 += (newCepFields.campo3 ? '\n' : '') + cep;
+            }
+          }
+          if (row.campo4) {
+            const cep = String(row.campo4).replace(/\D/g, '');
+            if (cep.length === 8) {
+              newCepFields.campo4 += (newCepFields.campo4 ? '\n' : '') + cep;
+            }
+          }
+        });
+
+        setCepFields(newCepFields);
+        
+        // Processar automaticamente
+        const { ceps, fieldCounts } = validateAndPrepareCepsAdvanced();
+        await processBatch(ceps, fieldCounts);
       }
-
-      // Processar dados do arquivo e distribuir nos campos
-      const newCepFields = {
-        campo1: '',
-        campo2: '',
-        campo3: '',
-        campo4: ''
-      };
-
-      jsonData.forEach((row, index) => {
-        if (row.campo1) {
-          const cep = String(row.campo1).replace(/\D/g, '');
-          if (cep.length === 8) {
-            newCepFields.campo1 += (newCepFields.campo1 ? '\n' : '') + cep;
-          }
-        }
-        if (row.campo2) {
-          const cep = String(row.campo2).replace(/\D/g, '');
-          if (cep.length === 8) {
-            newCepFields.campo2 += (newCepFields.campo2 ? '\n' : '') + cep;
-          }
-        }
-        if (row.campo3) {
-          const cep = String(row.campo3).replace(/\D/g, '');
-          if (cep.length === 8) {
-            newCepFields.campo3 += (newCepFields.campo3 ? '\n' : '') + cep;
-          }
-        }
-        if (row.campo4) {
-          const cep = String(row.campo4).replace(/\D/g, '');
-          if (cep.length === 8) {
-            newCepFields.campo4 += (newCepFields.campo4 ? '\n' : '') + cep;
-          }
-        }
-      });
-
-      setCepFields(newCepFields);
-      
-      // Processar automaticamente após carregar o arquivo
-      const { ceps, fieldCounts } = validateAndPrepareCeps();
-      await processBatch(ceps, fieldCounts);
       
       e.target.value = '';
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Erro ao processar arquivo');
     }
-  }, [loading]);
+  }, [loading, mode]);
 
   const downloadResults = useCallback(() => {
     if (loading || results.length === 0) return;
@@ -307,29 +359,32 @@ export function BatchLookup() {
       const workbook = utils.book_new();
       utils.book_append_sheet(workbook, worksheet, 'Resultados');
       
-      // Adicionar estatísticas por campo
-      const statsByCampo = ['Campo 1', 'Campo 2', 'Campo 3', 'Campo 4'].map(campo => {
-        const campoResults = results.filter(r => r.campo_origem === campo);
-        return {
-          Campo: campo,
-          'Total Processados': campoResults.length,
-          'Encontrados': campoResults.filter(r => r.status === 'Encontrado').length,
-          'Não Encontrados': campoResults.filter(r => r.status === 'Não encontrado').length,
-          'Erros': campoResults.filter(r => r.status === 'Erro').length,
-          'Taxa Sucesso (%)': campoResults.length > 0 
-            ? Math.round((campoResults.filter(r => r.status === 'Encontrado').length / campoResults.length) * 100)
-            : 0,
-          'Tempo Médio (ms)': campoResults.length > 0
-            ? Math.round(campoResults.reduce((acc, r) => acc + r.tempo_resposta, 0) / campoResults.length)
-            : 0
-        };
-      });
-      
-      const statsWorksheet = utils.json_to_sheet(statsByCampo);
-      utils.book_append_sheet(workbook, statsWorksheet, 'Estatísticas por Campo');
+      if (mode === 'advanced') {
+        // Estatísticas por campo apenas no modo avançado
+        const statsByCampo = ['Campo 1', 'Campo 2', 'Campo 3', 'Campo 4'].map(campo => {
+          const campoResults = results.filter(r => r.campo_origem === campo);
+          return {
+            Campo: campo,
+            'Total Processados': campoResults.length,
+            'Encontrados': campoResults.filter(r => r.status === 'Encontrado').length,
+            'Não Encontrados': campoResults.filter(r => r.status === 'Não encontrado').length,
+            'Erros': campoResults.filter(r => r.status === 'Erro').length,
+            'Taxa Sucesso (%)': campoResults.length > 0 
+              ? Math.round((campoResults.filter(r => r.status === 'Encontrado').length / campoResults.length) * 100)
+              : 0,
+            'Tempo Médio (ms)': campoResults.length > 0
+              ? Math.round(campoResults.reduce((acc, r) => acc + r.tempo_resposta, 0) / campoResults.length)
+              : 0
+          };
+        });
+        
+        const statsWorksheet = utils.json_to_sheet(statsByCampo);
+        utils.book_append_sheet(workbook, statsWorksheet, 'Estatísticas por Campo');
+      }
       
       // Estatísticas gerais
       const generalStats = {
+        'Modo de Processamento': mode === 'simple' ? 'Simples' : 'Avançado',
         'Total Geral': results.length,
         'Encontrados': results.filter(r => r.status === 'Encontrado').length,
         'Não Encontrados': results.filter(r => r.status === 'Não encontrado').length,
@@ -342,11 +397,15 @@ export function BatchLookup() {
       const generalStatsWorksheet = utils.json_to_sheet([generalStats]);
       utils.book_append_sheet(workbook, generalStatsWorksheet, 'Estatísticas Gerais');
       
-      writeFile(workbook, `consulta_cep_4campos_${new Date().toISOString().split('T')[0]}.xlsx`);
+      const fileName = mode === 'simple' 
+        ? `consulta_cep_simples_${new Date().toISOString().split('T')[0]}.xlsx`
+        : `consulta_cep_4campos_${new Date().toISOString().split('T')[0]}.xlsx`;
+        
+      writeFile(workbook, fileName);
     } catch (error) {
       setError('Erro ao gerar arquivo de resultados');
     }
-  }, [results, loading]);
+  }, [results, loading, mode]);
 
   const formatTime = (ms: number): string => {
     if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -375,6 +434,10 @@ export function BatchLookup() {
     setCepFields(prev => ({ ...prev, [field]: '' }));
   };
 
+  const clearSimpleField = () => {
+    setSimpleCeps('');
+  };
+
   const getFieldStats = (field: keyof typeof cepFields) => {
     const ceps = parseInput(cepFields[field]);
     return {
@@ -384,23 +447,67 @@ export function BatchLookup() {
     };
   };
 
-  const totalCeps = Object.values(cepFields).reduce((total, field) => {
-    return total + parseInput(field).length;
-  }, 0);
+  const getSimpleStats = () => {
+    const ceps = parseInput(simpleCeps);
+    return {
+      count: ceps.length,
+      isOverLimit: ceps.length > MAX_CEPS_SIMPLE_MODE,
+      percentage: (ceps.length / MAX_CEPS_SIMPLE_MODE) * 100
+    };
+  };
 
-  const hasAnyCeps = Object.values(cepFields).some(field => field.trim());
+  const totalCeps = mode === 'simple' 
+    ? parseInput(simpleCeps).length
+    : Object.values(cepFields).reduce((total, field) => {
+        return total + parseInput(field).length;
+      }, 0);
+
+  const hasAnyCeps = mode === 'simple' 
+    ? simpleCeps.trim().length > 0
+    : Object.values(cepFields).some(field => field.trim());
 
   return (
     <div className="max-w-6xl mx-auto">
       <div className="bg-white rounded-lg shadow-lg p-6">
         <div className="space-y-6">
-          {/* Header com informações */}
+          {/* Header com toggle de modo */}
           <div className="border-b pb-4">
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Consulta em Lote - 4 Campos CEP</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-gray-900">Consulta em Lote</h2>
+              
+              <div className="flex items-center gap-4">
+                <span className={`text-sm font-medium ${mode === 'simple' ? 'text-blue-600' : 'text-gray-500'}`}>
+                  Modo Simples
+                </span>
+                <button
+                  onClick={() => {
+                    setMode(mode === 'simple' ? 'advanced' : 'simple');
+                    resetState();
+                  }}
+                  className="p-1 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                  disabled={loading}
+                >
+                  {mode === 'simple' ? (
+                    <ToggleLeft className="w-8 h-8" />
+                  ) : (
+                    <ToggleRight className="w-8 h-8" />
+                  )}
+                </button>
+                <span className={`text-sm font-medium ${mode === 'advanced' ? 'text-blue-600' : 'text-gray-500'}`}>
+                  Modo Avançado
+                </span>
+              </div>
+            </div>
+            
             <div className="flex flex-wrap gap-4 text-sm text-gray-600">
               <div className="flex items-center gap-1">
                 <BarChart3 className="w-4 h-4" />
-                <span>Máximo: {MAX_CEPS_PER_FIELD} CEPs por campo</span>
+                <span>
+                  {mode === 'simple' 
+                    ? `Máximo: ${MAX_CEPS_SIMPLE_MODE} CEPs` 
+                    : `Máximo: ${MAX_CEPS_PER_FIELD} CEPs por campo`
+                  }
+                </span>
               </div>
               <div className="flex items-center gap-1">
                 <Clock className="w-4 h-4" />
@@ -413,81 +520,152 @@ export function BatchLookup() {
             </div>
           </div>
 
-          {/* 4 Campos de CEP */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {Object.entries(cepFields).map(([fieldKey, fieldValue], index) => {
-              const stats = getFieldStats(fieldKey as keyof typeof cepFields);
-              const fieldNumber = index + 1;
+          {/* Campos de entrada baseados no modo */}
+          {mode === 'simple' ? (
+            // MODO SIMPLES - Campo único
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <label className="block text-lg font-medium text-gray-700">
+                  CEPs para Consulta
+                </label>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className={`px-3 py-1 rounded-full ${
+                    getSimpleStats().isOverLimit 
+                      ? 'bg-red-100 text-red-800' 
+                      : getSimpleStats().count > 0 
+                        ? 'bg-green-100 text-green-800'
+                        : 'bg-gray-100 text-gray-600'
+                  }`}>
+                    {getSimpleStats().count}/{MAX_CEPS_SIMPLE_MODE}
+                  </span>
+                  {simpleCeps && (
+                    <button
+                      onClick={clearSimpleField}
+                      className="text-gray-400 hover:text-gray-600"
+                      title="Limpar campo"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
               
-              return (
-                <div key={fieldKey} className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-sm font-medium text-gray-700">
-                      Campo {fieldNumber} - CEPs
-                    </label>
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className={`px-2 py-1 rounded-full ${
-                        stats.isOverLimit 
-                          ? 'bg-red-100 text-red-800' 
-                          : stats.count > 0 
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-gray-100 text-gray-600'
-                      }`}>
-                        {stats.count}/{MAX_CEPS_PER_FIELD}
-                      </span>
-                      {fieldValue && (
-                        <button
-                          onClick={() => clearField(fieldKey as keyof typeof cepFields)}
-                          className="text-gray-400 hover:text-gray-600"
-                          title="Limpar campo"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
+              <div className="relative">
+                <textarea
+                  value={simpleCeps}
+                  onChange={(e) => {
+                    setError(null);
+                    setSimpleCeps(e.target.value);
+                  }}
+                  placeholder={`Digite ou cole os CEPs (um por linha ou separados por vírgula/espaço)
+Exemplo:
+12345678
+87654321, 11111111
+22222222 33333333`}
+                  className={`w-full h-48 px-4 py-3 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none ${
+                    getSimpleStats().isOverLimit 
+                      ? 'border-red-300 bg-red-50' 
+                      : 'border-gray-300'
+                  }`}
+                  disabled={loading}
+                />
+                
+                {getSimpleStats().count > 0 && (
+                  <div className="absolute bottom-3 right-3 w-20 h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        getSimpleStats().isOverLimit 
+                          ? 'bg-red-500' 
+                          : 'bg-blue-500'
+                      }`}
+                      style={{ width: `${Math.min(getSimpleStats().percentage, 100)}%` }}
+                    />
                   </div>
-                  
-                  <div className="relative">
-                    <textarea
-                      value={fieldValue}
-                      onChange={(e) => handleFieldChange(fieldKey as keyof typeof cepFields, e.target.value)}
-                      placeholder={`Digite os CEPs do campo ${fieldNumber}
+                )}
+              </div>
+              
+              {getSimpleStats().isOverLimit && (
+                <p className="text-sm text-red-600">
+                  ⚠️ Limite excedido! Máximo {MAX_CEPS_SIMPLE_MODE} CEPs no modo simples.
+                </p>
+              )}
+            </div>
+          ) : (
+            // MODO AVANÇADO - 4 campos separados
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {Object.entries(cepFields).map(([fieldKey, fieldValue], index) => {
+                const stats = getFieldStats(fieldKey as keyof typeof cepFields);
+                const fieldNumber = index + 1;
+                
+                return (
+                  <div key={fieldKey} className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Campo {fieldNumber} - CEPs
+                      </label>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className={`px-2 py-1 rounded-full ${
+                          stats.isOverLimit 
+                            ? 'bg-red-100 text-red-800' 
+                            : stats.count > 0 
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-gray-100 text-gray-600'
+                        }`}>
+                          {stats.count}/{MAX_CEPS_PER_FIELD}
+                        </span>
+                        {fieldValue && (
+                          <button
+                            onClick={() => clearField(fieldKey as keyof typeof cepFields)}
+                            className="text-gray-400 hover:text-gray-600"
+                            title="Limpar campo"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div className="relative">
+                      <textarea
+                        value={fieldValue}
+                        onChange={(e) => handleFieldChange(fieldKey as keyof typeof cepFields, e.target.value)}
+                        placeholder={`Digite os CEPs do campo ${fieldNumber}
 Exemplo:
 12345678
 87654321
 11111111`}
-                      className={`w-full h-32 px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none ${
-                        stats.isOverLimit 
-                          ? 'border-red-300 bg-red-50' 
-                          : 'border-gray-300'
-                      }`}
-                      disabled={loading}
-                    />
+                        className={`w-full h-32 px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none ${
+                          stats.isOverLimit 
+                            ? 'border-red-300 bg-red-50' 
+                            : 'border-gray-300'
+                        }`}
+                        disabled={loading}
+                      />
+                      
+                      {stats.count > 0 && (
+                        <div className="absolute bottom-2 right-2 w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full transition-all duration-300 ${
+                              stats.isOverLimit 
+                                ? 'bg-red-500' 
+                                : 'bg-blue-500'
+                            }`}
+                            style={{ width: `${Math.min(stats.percentage, 100)}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
                     
-                    {/* Barra de progresso do campo */}
-                    {stats.count > 0 && (
-                      <div className="absolute bottom-2 right-2 w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full transition-all duration-300 ${
-                            stats.isOverLimit 
-                              ? 'bg-red-500' 
-                              : 'bg-blue-500'
-                          }`}
-                          style={{ width: `${Math.min(stats.percentage, 100)}%` }}
-                        />
-                      </div>
+                    {stats.isOverLimit && (
+                      <p className="text-xs text-red-600">
+                        ⚠️ Limite excedido! Máximo {MAX_CEPS_PER_FIELD} CEPs por campo.
+                      </p>
                     )}
                   </div>
-                  
-                  {stats.isOverLimit && (
-                    <p className="text-xs text-red-600">
-                      ⚠️ Limite excedido! Máximo {MAX_CEPS_PER_FIELD} CEPs por campo.
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Upload de arquivo */}
           <div className="border-t border-gray-200 pt-6">
@@ -496,7 +674,10 @@ Exemplo:
             </h3>
             <div className="space-y-2">
               <p className="text-sm text-gray-500">
-                Arquivo deve ter colunas: campo1, campo2, campo3, campo4 (cada uma com até {MAX_CEPS_PER_FIELD} CEPs)
+                {mode === 'simple' 
+                  ? 'Arquivo deve ter uma coluna "cep" ou CEPs na primeira coluna'
+                  : 'Arquivo deve ter colunas: campo1, campo2, campo3, campo4 (cada uma com até 600 CEPs)'
+                }
               </p>
               <label className="block">
                 <input
@@ -519,7 +700,9 @@ Exemplo:
           {progress && (
             <div className="bg-gray-50 rounded-lg p-6 space-y-4">
               <div className="flex items-center justify-between">
-                <h4 className="text-lg font-medium text-gray-900">Progresso da Consulta</h4>
+                <h4 className="text-lg font-medium text-gray-900">
+                  Progresso da Consulta ({mode === 'simple' ? 'Modo Simples' : 'Modo Avançado'})
+                </h4>
                 <div className="flex items-center gap-2">
                   {loading && (
                     <>
@@ -555,25 +738,27 @@ Exemplo:
                 </div>
               </div>
 
-              {/* Estatísticas por campo */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <div className="bg-white rounded-lg p-3">
-                  <div className="text-gray-500">Campo 1</div>
-                  <div className="text-lg font-semibold text-blue-600">{progress.campo1Count} CEPs</div>
+              {/* Estatísticas por campo (apenas no modo avançado) */}
+              {mode === 'advanced' && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="bg-white rounded-lg p-3">
+                    <div className="text-gray-500">Campo 1</div>
+                    <div className="text-lg font-semibold text-blue-600">{progress.campo1Count} CEPs</div>
+                  </div>
+                  <div className="bg-white rounded-lg p-3">
+                    <div className="text-gray-500">Campo 2</div>
+                    <div className="text-lg font-semibold text-green-600">{progress.campo2Count} CEPs</div>
+                  </div>
+                  <div className="bg-white rounded-lg p-3">
+                    <div className="text-gray-500">Campo 3</div>
+                    <div className="text-lg font-semibold text-purple-600">{progress.campo3Count} CEPs</div>
+                  </div>
+                  <div className="bg-white rounded-lg p-3">
+                    <div className="text-gray-500">Campo 4</div>
+                    <div className="text-lg font-semibold text-orange-600">{progress.campo4Count} CEPs</div>
+                  </div>
                 </div>
-                <div className="bg-white rounded-lg p-3">
-                  <div className="text-gray-500">Campo 2</div>
-                  <div className="text-lg font-semibold text-green-600">{progress.campo2Count} CEPs</div>
-                </div>
-                <div className="bg-white rounded-lg p-3">
-                  <div className="text-gray-500">Campo 3</div>
-                  <div className="text-lg font-semibold text-purple-600">{progress.campo3Count} CEPs</div>
-                </div>
-                <div className="bg-white rounded-lg p-3">
-                  <div className="text-gray-500">Campo 4</div>
-                  <div className="text-lg font-semibold text-orange-600">{progress.campo4Count} CEPs</div>
-                </div>
-              </div>
+              )}
 
               {/* Estatísticas gerais */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -625,7 +810,7 @@ Exemplo:
               ) : (
                 <>
                   <Upload className="w-5 h-5 mr-2" />
-                  <span>Processar {totalCeps} CEPs</span>
+                  <span>Processar {totalCeps} CEPs ({mode === 'simple' ? 'Simples' : 'Avançado'})</span>
                 </>
               )}
             </button>
@@ -666,7 +851,7 @@ Exemplo:
             <div className="mt-8">
               <div className="flex justify-between items-center mb-4">
                 <h4 className="text-lg font-medium text-gray-900">
-                  Resultados ({results.length})
+                  Resultados ({results.length}) - {mode === 'simple' ? 'Modo Simples' : 'Modo Avançado'}
                 </h4>
                 <div className="flex gap-4 text-sm text-gray-600">
                   <span className="text-green-600">
@@ -683,7 +868,7 @@ Exemplo:
                   <thead className="bg-gray-50 sticky top-0">
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Campo
+                        {mode === 'simple' ? 'Origem' : 'Campo'}
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         CEP
@@ -706,14 +891,20 @@ Exemplo:
                     {results.map((result, index) => (
                       <tr key={index} className="hover:bg-gray-50">
                         <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
-                          <span className={`px-2 py-1 rounded-full text-xs ${
-                            result.campo_origem === 'Campo 1' ? 'bg-blue-100 text-blue-800' :
-                            result.campo_origem === 'Campo 2' ? 'bg-green-100 text-green-800' :
-                            result.campo_origem === 'Campo 3' ? 'bg-purple-100 text-purple-800' :
-                            'bg-orange-100 text-orange-800'
-                          }`}>
-                            {result.campo_origem}
-                          </span>
+                          {mode === 'simple' ? (
+                            <span className="px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
+                              {result.campo_origem}
+                            </span>
+                          ) : (
+                            <span className={`px-2 py-1 rounded-full text-xs ${
+                              result.campo_origem === 'Campo 1' ? 'bg-blue-100 text-blue-800' :
+                              result.campo_origem === 'Campo 2' ? 'bg-green-100 text-green-800' :
+                              result.campo_origem === 'Campo 3' ? 'bg-purple-100 text-purple-800' :
+                              'bg-orange-100 text-orange-800'
+                            }`}>
+                              {result.campo_origem}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
                           {result.cep}
